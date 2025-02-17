@@ -586,7 +586,7 @@ where
     }
 }
 
-pub struct State { }
+pub struct State {}
 
 #[non_exhaustive]
 pub struct Caller<'a> {
@@ -628,7 +628,7 @@ impl<UserError> Linker<UserError> {
         func: impl Fn(Caller) -> Result<(), UserError> + Send + Sync + 'static,
     ) -> Result<&mut Self, Error>
     where
-        UserError: 'static
+        UserError: 'static,
     {
         let symbol = symbol.as_ref();
         if self.host_functions.contains_key(symbol) {
