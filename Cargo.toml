@@ -17,8 +17,8 @@ members = [
     "tools/polkavm-linux-raw-generate",
     "tools/spectool",
 
-    "examples/doom",
-    "examples/hello-world",
+#    "examples/doom",
+#    "examples/hello-world",
 ]
 
 [workspace.package]

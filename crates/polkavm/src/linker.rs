@@ -19,22 +19,22 @@ use std::collections::hash_map::Entry;
 #[cfg(feature = "std")]
 use std::collections::HashMap as LookupMap;
 
-trait CallFn<UserData, UserError>: Send + Sync {
-    fn call(&self, user_data: &mut UserData, instance: &mut RawInstance) -> Result<(), UserError>;
+trait CallFn<UserError>: Send + Sync {
+    fn call(&self, user_data: &mut State, instance: &mut RawInstance) -> Result<(), UserError>;
 }
 
 #[repr(transparent)]
-pub struct CallFnArc<UserData, UserError>(Arc<dyn CallFn<UserData, UserError>>);
+pub struct CallFnArc<UserError>(Arc<dyn CallFn<UserError>>);
 
-type FallbackHandlerArc<UserData, UserError> = Arc<dyn Fn(Caller<UserData>, u32) -> Result<(), UserError> + Send + Sync + 'static>;
+type FallbackHandlerArc<UserError> = Arc<dyn Fn(Caller, u32) -> Result<(), UserError> + Send + Sync + 'static>;
 
-impl<UserData, UserError> Clone for CallFnArc<UserData, UserError> {
+impl<UserError> Clone for CallFnArc<UserError> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-pub trait IntoCallFn<UserData, UserError, Params, Result>: Send + Sync + 'static {
+pub trait IntoCallFn<UserError, Params, Result>: Send + Sync + 'static {
     #[doc(hidden)]
     const _REGS_REQUIRED_32: usize;
 
@@ -42,7 +42,7 @@ pub trait IntoCallFn<UserData, UserError, Params, Result>: Send + Sync + 'static
     const _REGS_REQUIRED_64: usize;
 
     #[doc(hidden)]
-    fn _into_extern_fn(self) -> CallFnArc<UserData, UserError>;
+    fn _into_extern_fn(self) -> CallFnArc<UserError>;
 }
 
 /// A type which can be marshalled through the VM's FFI boundary.
@@ -463,13 +463,13 @@ macro_rules! impl_into_extern_fn {
     }};
 
     ($arg_count:tt $($args:ident)*) => {
-        impl<UserData, UserError, F, $($args,)* R> CallFn<UserData, UserError> for (F, UnsafePhantomData<(R, $($args),*)>)
+        impl<UserError, F, $($args,)* R> CallFn<UserError> for (F, UnsafePhantomData<(R, $($args),*)>)
             where
-            F: Fn(Caller<'_, UserData>, $($args),*) -> R + Send + Sync + 'static,
+            F: Fn(Caller<'_>, $($args),*) -> R + Send + Sync + 'static,
             $($args: AbiTy,)*
             R: ReturnTy<UserError>,
         {
-            fn call(&self, user_data: &mut UserData, instance: &mut RawInstance) -> Result<(), UserError> {
+            fn call(&self, user_data: &mut State, instance: &mut RawInstance) -> Result<(), UserError> {
                 let is_64_bit = instance.module().blob().is_64_bit();
                 let result = {
                     #[allow(unused_mut)]
@@ -498,7 +498,7 @@ macro_rules! impl_into_extern_fn {
             }
         }
 
-        impl<UserData, UserError, F, $($args,)* R> IntoCallFn<UserData, UserError, ($($args,)*), R> for F
+        impl<UserError, F, $($args,)* R> IntoCallFn<UserError, ($($args,)*), R> for F
         where
             F: Fn($($args),*) -> R + Send + Sync + 'static,
             $($args: AbiTy,)*
@@ -507,25 +507,25 @@ macro_rules! impl_into_extern_fn {
             const _REGS_REQUIRED_32: usize = 0 $(+ $args::_REGS_REQUIRED_32)*;
             const _REGS_REQUIRED_64: usize = 0 $(+ $args::_REGS_REQUIRED_64)*;
 
-            fn _into_extern_fn(self) -> CallFnArc<UserData, UserError> {
+            fn _into_extern_fn(self) -> CallFnArc<UserError> {
                 #[allow(non_snake_case)]
-                let callback = move |_caller: Caller<UserData>, $($args: $args),*| -> R {
+                let callback = move |_caller: Caller, $($args: $args),*| -> R {
                     self($($args),*)
                 };
                 CallFnArc(Arc::new((callback, UnsafePhantomData(PhantomData::<(R, $($args),*)>))))
             }
         }
 
-        impl<UserData, UserError, F, $($args,)* R> IntoCallFn<UserData, UserError, (Caller<'_, UserData>, $($args,)*), R> for F
+        impl<UserError, F, $($args,)* R> IntoCallFn<UserError, (Caller<'_>, $($args,)*), R> for F
         where
-            F: Fn(Caller<'_, UserData>, $($args),*) -> R + Send + Sync + 'static,
+            F: Fn(Caller<'_>, $($args),*) -> R + Send + Sync + 'static,
             $($args: AbiTy,)*
             R: ReturnTy<UserError>,
         {
             const _REGS_REQUIRED_32: usize = 0 $(+ $args::_REGS_REQUIRED_32)*;
             const _REGS_REQUIRED_64: usize = 0 $(+ $args::_REGS_REQUIRED_64)*;
 
-            fn _into_extern_fn(self) -> CallFnArc<UserData, UserError> {
+            fn _into_extern_fn(self) -> CallFnArc<UserError> {
                 CallFnArc(Arc::new((self, UnsafePhantomData(PhantomData::<(R, $($args),*)>))))
             }
         }
@@ -575,38 +575,39 @@ struct DynamicFn<T, F> {
     _phantom: UnsafePhantomData<T>,
 }
 
-impl<UserData, UserError, F> CallFn<UserData, UserError> for DynamicFn<UserData, F>
+impl<UserError, F, T> CallFn<UserError> for DynamicFn<T, F>
 where
-    F: Fn(Caller<'_, UserData>) -> Result<(), UserError> + Send + Sync + 'static,
-    UserData: 'static,
+    F: Fn(Caller<'_>) -> Result<(), UserError> + Send + Sync + 'static,
 {
-    fn call(&self, user_data: &mut UserData, instance: &mut RawInstance) -> Result<(), UserError> {
+    fn call(&self, user_data: &mut State, instance: &mut RawInstance) -> Result<(), UserError> {
         let caller = Caller { user_data, instance };
 
         (self.callback)(caller)
     }
 }
 
+pub struct State { }
+
 #[non_exhaustive]
-pub struct Caller<'a, UserData = ()> {
-    pub user_data: &'a mut UserData,
+pub struct Caller<'a> {
+    pub user_data: &'a mut State,
     pub instance: &'a mut RawInstance,
 }
 
-pub struct Linker<UserData = (), UserError = core::convert::Infallible> {
-    host_functions: LookupMap<Vec<u8>, CallFnArc<UserData, UserError>>,
+pub struct Linker<UserError = core::convert::Infallible> {
+    host_functions: LookupMap<Vec<u8>, CallFnArc<UserError>>,
     #[allow(clippy::type_complexity)]
-    fallback_handler: Option<FallbackHandlerArc<UserData, UserError>>,
-    phantom: PhantomData<(UserData, UserError)>,
+    fallback_handler: Option<FallbackHandlerArc<UserError>>,
+    phantom: PhantomData<UserError>,
 }
 
-impl<UserData, UserError> Default for Linker<UserData, UserError> {
+impl<UserError> Default for Linker<UserError> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<UserData, UserError> Linker<UserData, UserError> {
+impl<UserError> Linker<UserError> {
     pub fn new() -> Self {
         Self {
             host_functions: Default::default(),
@@ -616,7 +617,7 @@ impl<UserData, UserError> Linker<UserData, UserError> {
     }
 
     /// Defines a fallback external call handler, in case no other registered functions match.
-    pub fn define_fallback(&mut self, func: impl Fn(Caller<UserData>, u32) -> Result<(), UserError> + Send + Sync + 'static) {
+    pub fn define_fallback(&mut self, func: impl Fn(Caller, u32) -> Result<(), UserError> + Send + Sync + 'static) {
         self.fallback_handler = Some(Arc::new(func));
     }
 
@@ -624,10 +625,10 @@ impl<UserData, UserError> Linker<UserData, UserError> {
     pub fn define_untyped(
         &mut self,
         symbol: impl AsRef<[u8]>,
-        func: impl Fn(Caller<UserData>) -> Result<(), UserError> + Send + Sync + 'static,
+        func: impl Fn(Caller) -> Result<(), UserError> + Send + Sync + 'static,
     ) -> Result<&mut Self, Error>
     where
-        UserData: 'static,
+        UserError: 'static
     {
         let symbol = symbol.as_ref();
         if self.host_functions.contains_key(symbol) {
@@ -641,7 +642,7 @@ impl<UserData, UserError> Linker<UserData, UserError> {
             symbol.to_owned(),
             CallFnArc(Arc::new(DynamicFn {
                 callback: func,
-                _phantom: UnsafePhantomData(PhantomData),
+                _phantom: UnsafePhantomData(PhantomData::<UserError>),
             })),
         );
 
@@ -652,7 +653,7 @@ impl<UserData, UserError> Linker<UserData, UserError> {
     pub fn define_typed<Params, Args>(
         &mut self,
         symbol: impl AsRef<[u8]>,
-        func: impl IntoCallFn<UserData, UserError, Params, Args>,
+        func: impl IntoCallFn<UserError, Params, Args>,
     ) -> Result<&mut Self, Error> {
         let symbol = symbol.as_ref();
         if self.host_functions.contains_key(symbol) {
@@ -667,7 +668,7 @@ impl<UserData, UserError> Linker<UserData, UserError> {
     }
 
     /// Pre-instantiates a new module, resolving its imports and exports.
-    pub fn instantiate_pre(&self, module: &Module) -> Result<InstancePre<UserData, UserError>, Error> {
+    pub fn instantiate_pre(&self, module: &Module) -> Result<InstancePre<UserError>, Error> {
         let mut exports = LookupMap::new();
         for export in module.exports() {
             match exports.entry(export.symbol().as_bytes().to_owned()) {
@@ -685,7 +686,7 @@ impl<UserData, UserError> Linker<UserData, UserError> {
             }
         }
 
-        let mut imports: Vec<Option<CallFnArc<UserData, UserError>>> = Vec::with_capacity(module.imports().len() as usize);
+        let mut imports: Vec<Option<CallFnArc<UserError>>> = Vec::with_capacity(module.imports().len() as usize);
         for symbol in module.imports() {
             let Some(symbol) = symbol else {
                 if module.is_strict() {
@@ -720,34 +721,34 @@ impl<UserData, UserError> Linker<UserData, UserError> {
     }
 }
 
-struct InstancePreState<UserData, UserError> {
+struct InstancePreState<UserError> {
     module: Module,
-    imports: Vec<Option<CallFnArc<UserData, UserError>>>,
+    imports: Vec<Option<CallFnArc<UserError>>>,
     exports: LookupMap<Vec<u8>, ProgramCounter>,
-    fallback_handler: Option<FallbackHandlerArc<UserData, UserError>>,
+    fallback_handler: Option<FallbackHandlerArc<UserError>>,
 }
 
-pub struct InstancePre<UserData = (), UserError = core::convert::Infallible>(Arc<InstancePreState<UserData, UserError>>);
+pub struct InstancePre<UserError = core::convert::Infallible>(Arc<InstancePreState<UserError>>);
 
-impl<UserData, UserError> Clone for InstancePre<UserData, UserError> {
+impl<UserError> Clone for InstancePre<UserError> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-pub struct Instance<UserData = (), UserError = core::convert::Infallible> {
+pub struct Instance<UserError = core::convert::Infallible> {
     instance: RawInstance,
-    pre: InstancePre<UserData, UserError>,
+    pre: InstancePre<UserError>,
 }
 
-impl<UserData, UserError> core::ops::Deref for Instance<UserData, UserError> {
+impl<UserError> core::ops::Deref for Instance<UserError> {
     type Target = RawInstance;
     fn deref(&self) -> &Self::Target {
         &self.instance
     }
 }
 
-impl<UserData, UserError> core::ops::DerefMut for Instance<UserData, UserError> {
+impl<UserError> core::ops::DerefMut for Instance<UserError> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.instance
     }
@@ -768,8 +769,8 @@ pub enum CallError<UserError = core::convert::Infallible> {
     User(UserError),
 }
 
-impl<UserData, UserError> InstancePre<UserData, UserError> {
-    pub fn instantiate(&self) -> Result<Instance<UserData, UserError>, Error> {
+impl<UserError> InstancePre<UserError> {
+    pub fn instantiate(&self) -> Result<Instance<UserError>, Error> {
         Ok(Instance {
             instance: self.0.module.instantiate()?,
             pre: self.clone(),
@@ -803,11 +804,11 @@ impl EntryPoint for ProgramCounter {
     }
 }
 
-impl<UserData, UserError> Instance<UserData, UserError> {
+impl<UserError> Instance<UserError> {
     /// Calls a given exported function with the given arguments.
     pub fn call_typed<FnArgs>(
         &mut self,
-        user_data: &mut UserData,
+        user_data: &mut State,
         entry_point: impl EntryPoint,
         args: FnArgs,
     ) -> Result<(), CallError<UserError>>
@@ -906,7 +907,7 @@ impl<UserData, UserError> Instance<UserData, UserError> {
     /// A conveniance function to call [`Instance::call_typed`] and [`RawInstance::get_result_typed`] in a single function call.
     pub fn call_typed_and_get_result<FnResult, FnArgs>(
         &mut self,
-        user_data: &mut UserData,
+        user_data: &mut State,
         entry_point: impl EntryPoint,
         args: FnArgs,
     ) -> Result<FnResult, CallError<UserError>>
