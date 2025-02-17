@@ -141,7 +141,7 @@ pub type Gas = i64;
 pub use crate::api::{Engine, MemoryAccessError, Module, RawInstance, RegValue};
 pub use crate::config::{BackendKind, Config, GasMeteringKind, ModuleConfig, SandboxKind};
 pub use crate::error::Error;
-pub use crate::linker::{CallError, Caller, Instance, InstancePre, Linker};
+pub use crate::linker::{CallError, Caller, Instance, InstancePre, Linker, State};
 pub use crate::utils::{InterruptKind, Segfault};
 
 pub const RETURN_TO_HOST: u64 = polkavm_common::abi::VM_ADDR_RETURN_TO_HOST as u64;

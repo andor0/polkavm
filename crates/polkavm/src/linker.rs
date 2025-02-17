@@ -586,7 +586,15 @@ where
     }
 }
 
-pub struct State {}
+pub struct State {
+    address: Vec<u8>,
+}
+
+impl State {
+    pub fn new(address: Vec<u8>) -> Self {
+        Self { address }
+    }
+}
 
 #[non_exhaustive]
 pub struct Caller<'a> {
